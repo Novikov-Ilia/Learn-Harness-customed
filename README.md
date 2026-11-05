@@ -1,95 +1,65 @@
-# LearnHarness — custom edition
+# LearnHarness — персональная версия
 
-Personal customization of [amosblomqvist/learnharness](https://github.com/amosblomqvist/learnharness), licensed under AGPL-3.0-only. Upstream authorship and history are preserved.
+Модификация [LearnHarness](https://learnharness.ai) — приложения для обучения с ИИ, практики и ведения графа знаний.
 
-Adds planning chats and study branches, learning notes, direct attachments, graph editing and mathematical rendering, Gemini via Antigravity CLI, and downloadable files and clipboard actions in chat.
+**Оригинальный проект:** [amosblomqvist/learnharness](https://github.com/amosblomqvist/learnharness), автор — Amos Blomqvist. Эта версия развивает его код и добавляет возможности для персонального учебного процесса.
 
-This repository contains source code. Custom Linux AppImage builds are distributed separately through the private `Novikov-Ilia/Learn-Harness-image` repository. The upstream download links below refer to the original project. User profiles, conversations, attachments, credentials, and local delivery reports are excluded.
+## Что изменено
 
-The bundled Antigravity runtime is prepared from the official download by `scripts/prepare-antigravity.mjs`; its binary is not stored in this source repository. The current custom build targets Linux x86_64. Upstream CI and release configuration remain for reference; no build or release workflow is invoked by this publication.
+### Чаты и контекст
 
----
+- **Заметки об обучении.** Чат сохраняет краткую сводку освоенного материала, допущенных ошибок и состояния их исправления.
+- **Ответвления чатов.** Можно вынести подтему в дочерний чат. Он получает снимок полного контекста родителя на момент создания; последующие сообщения родителя этот снимок не меняют. Родитель получает заметки дочерних чатов, а не их полную переписку.
+- **Дерево чатов.** Ответвления отображаются иерархически, со сворачиванием и поиском.
+- **Вложения непосредственно в чате.** Поддерживаются PDF, PNG, JPEG, WebP, TXT и MD. Файлы можно выбирать, перетаскивать, а изображения — вставлять из буфера обмена. Вложения доступны при создании чата и в полях ответов и размышлений в режимах teaching, practice и planning.
+- **Отмена вопроса ИИ.** Ожидающий вопрос можно отменить, сохранить предыдущий вывод агента и вернуться к свободному вводу.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lh_banner_dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/lh_banner_light.png">
-    <img src="docs/assets/lh_banner_light.png" alt="LearnHarness" width="640">
-  </picture>
-</p>
+### Планирование обучения
 
-<p align="center"><strong>An agent harness for learning.</strong></p>
+Добавлен отдельный режим **planning**: на основе материалов, цели и диагностики агент составляет общий план освоения, разбитый на логические блоки с зависимостями. Выбранный блок можно начать изучать в отдельном ответвлении с сохранением исходного контекста.
 
-<p align="center">
-  <a href="https://learnharness.ai">Download</a> ·
-  <a href="#how-it-works">How it works</a> ·
-  <a href="docs/development.md">Documentation</a> ·
-  <a href="https://github.com/amosblomqvist/learnharness/issues">Issues</a> ·
-  <a href="https://discord.gg/5tCHHQEB2e">Discord</a>
-</p>
+### Граф знаний
 
-LearnHarness uses AI agents to plan and teach lessons from your current understanding to your goal. It builds a detailed picture of what you understand and how you reason. That picture is updated as you learn.
+- Удаление вершин с очисткой связанных записей.
+- Переименование тематических областей.
+- Переобработка сохранённого графа агентом: логические связи формируют рёбра, тематические группы влияют на расположение вершин и объединение в области.
+- Подробная карточка знания с сохранёнными формулировками, источниками и связями, а также возможностью запросить и сохранить объяснение ИИ.
+- Отображение математических выражений через Markdown/KaTeX, включая осторожное распознавание обычной математической записи в старых данных. Исходные записи графа при отображении не изменяются.
 
-Instead of just giving you an explanation, it uses your answers and thinking to decide what you need next. Teaching builds understanding one reasoning step at a time. Practice makes it usable. A persistent knowledge graph carries it across sessions.
+### Gemini через Google CLI
 
-![LearnHarness teaching session](docs/assets/teaching-session.png)
+Добавлено подключение Google-аккаунта из настроек и использование моделей Gemini в учебных и фоновых задачах. Текущая реализация использует официальный **Antigravity CLI** и отдельный локальный профиль авторизации приложения.
 
-## How it works
+Доступность моделей и квоты определяет Google; наличие сохранённого входа само по себе не подтверждает доступ по подписке. Автоматического переключения на оплату через API-ключ нет. Подробнее — в [документации подключения Gemini](docs/gemini-cli.md).
 
-1. **Measure.** Before teaching, the agent finds where your understanding ends on each part the lesson depends on. Your answers, confidence, and thinking show it where to start.
-2. **Plan.** It works out a dependency map from that starting point to your goal. You can see the plan, and the lesson adapts when your understanding turns out different.
-3. **Teach.** Each step builds on something you already understand. You predict, get an explanation, and check your understanding. Confusions are repaired before anything is built on them. The aim is for the goal to feel obviously true, not merely familiar.
-4. **Practice.** Separate sessions pose varied problems that require the right knowledge to come to mind without being named first. Problems and hints adapt to your reasoning.
+### PDF и результаты работы агента
 
-**Think out loud.** The thinking fields let you explain your reasoning, uncertainties, and reactions in your own words. This is how the agent gets a detailed picture rather than just a record of right and wrong answers. You can type or use dictation.
+- Исправлена упаковка декодеров PDF.js для чтения и отображения сканированных PDF в собранном приложении.
+- Агент может создавать скачиваемые файлы и карточки копирования текста прямо в чате.
+- Улучшена диагностика ошибок ChatGPT, включая временные HTTP-ошибки сервиса. Диагностические сообщения ограничиваются по размеру и очищаются от токенов авторизации.
 
-The agent can also research questions in the background, create visual explanations, and build interactive demonstrations.
+## Код, сборки и данные
 
-## Knowledge that carries forward
+- В этом публичном репозитории размещён исходный код персональной версии.
+- Готовый **AppImage для Linux x86_64** размещается отдельно в [приватном репозитории сборок](https://github.com/Novikov-Ilia/Learn-Harness-image/releases). Для доступа нужны права на этот репозиторий.
+- Пользовательские профили, переписки, учебные вложения, ключи и локальные отчёты о данных в репозиторий не включаются.
+- Чаты и настройки хранятся локально. При обращении к внешней модели необходимый контекст передаётся выбранному провайдеру.
 
-What you are taught accumulates as propositions and reasoning chains: individual claims and the premises that lead to them. The graph shows this structure, with links back to the source sessions. You can also import notes.
+## Запуск для разработки
 
-Future teaching sessions can read the graph instead of starting from scratch. Practice sessions can draw their material from it. It stores the ideas and their connections, not ratings of your ability.
-
-![LearnHarness knowledge graph](docs/assets/knowledge-graph.png)
-
-## Download and get started
-
-**[Download from learnharness.ai](https://learnharness.ai)** · [GitHub Releases](https://github.com/amosblomqvist/learnharness/releases)
-
-- **macOS (Apple Silicon):** signed and notarized DMG. Drag the app to Applications.
-- **Windows (x64):** run the installer. It is currently unsigned; Windows may show an “unknown publisher” or SmartScreen warning.
-- **Linux (x64):** make the AppImage executable and open it, or install the Debian/Ubuntu `.deb`.
-
-Choose your models, then start a session with what you want to understand. You can use provider API keys, supported subscription connections in the desktop app, an installed [Claude Code CLI](docs/claude-code.md), or a [custom OpenAI-compatible endpoint](docs/custom-providers.md), including a local model server. Optional dictation and web search use separate service keys.
-
-Advanced users can set a [prompt-cache retention preference](docs/compaction-accounting.md#prompt-cache-retention) for each model slot under **Settings → Agent → Models → Show advanced settings**. Leaving it at **Pi default** preserves existing provider behavior; longer retention can increase cache-write costs.
-
-All three platforms support in-app updates.
-
-**Dictation:** Create a [Deepgram API key](https://console.deepgram.com/) with the **Member role or higher** ([required for token minting](https://developers.deepgram.com/reference/auth/tokens/grant)) and add it under **Settings → Providers → Dictation**. Choose the language below the key; **Multilingual** supports automatic recognition and mixed-language speech. A `403 Insufficient permissions` error during token minting can indicate an insufficient key role.
-
-## Your keys, your data
-
-- **Your keys and models.** No LearnHarness subscription or markup. Billing depends on your provider, CLI configuration, subscription, or local setup. The live cost meter estimates known API costs, not subscription, CLI, or custom-endpoint charges.
-- **Local storage.** Your chats, graph, settings, and API keys live on your machine. Learning records are plain files you can inspect.
-- **External services.** Models run through your configured providers. Model requests send the context needed for the task; web research and dictation also contact external services. Local storage does not mean offline processing.
-- **Inspectable behavior.** System prompts are visible and editable. The app is open source under the AGPL-3.0 license.
-
-## Development and support
+Требуется Node.js 26. Текущая интеграция Antigravity подготовлена для Linux x86_64.
 
 ```bash
-npm install
-npm run dev        # http://localhost:3000
-npm test           # deterministic, no LLM, no network
+npm ci
+npm run dev
 ```
 
-See the [development guide](docs/development.md) for setup and checks, [architecture](docs/architecture.md) for the shipped runtime, [keyboard reference](docs/keyboard.md) for shortcuts, and [desktop release guide](docs/desktop-release.md) for packaging and updates.
+Приложение будет доступно по адресу `http://localhost:3000`.
 
-Questions, bug reports, and feature requests: [GitHub Issues](https://github.com/amosblomqvist/learnharness/issues).
+Скрипт `scripts/prepare-antigravity.mjs`, запускаемый перед production-сборкой, загружает закреплённую версию CLI из официального источника и проверяет контрольные суммы. Сам бинарный файл CLI в Git не хранится.
 
-## License
+Дополнительные материалы: [разработка](docs/development.md), [архитектура](docs/architecture.md), [план проверок персональных возможностей](docs/personalization-test-plan.md). Унаследованные инструкции по выпуску и CI относятся к исходному проекту; они не означают автоматическую публикацию сборок этой версии.
 
-[AGPL-3.0](LICENSE)
+## Лицензия и авторство
 
-The app is free and open forever. If we ever charge for anything, it will be for convenience — managed keys, hosting — never for features you can run locally.
+[GNU AGPL-3.0-only](LICENSE). История исходного проекта и сведения об авторстве сохранены. Оригинальный продукт, его официальные сборки и документация доступны на [learnharness.ai](https://learnharness.ai) и в [репозитории автора](https://github.com/amosblomqvist/learnharness).
