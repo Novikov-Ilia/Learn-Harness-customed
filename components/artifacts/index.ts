@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import type { ArtifactPartProps } from "@/src/core";
+import { DownloadCard, CopyTextCard } from "@/components/artifacts/delivery-card";
 import { DemoCard } from "@/components/artifacts/demo-card";
 import { JobCard, PdfJobCard } from "@/components/artifacts/job-card";
 import { VisualCard } from "@/components/artifacts/visual-card";
@@ -20,6 +21,8 @@ import { ProblemCard, ConcludeCard } from "@/components/practice-cards";
  * artifact itself from part.output.
  */
 export const artifactRenderers: Record<string, ComponentType<ArtifactPartProps>> = {
+	create_file: DownloadCard,
+	copy_text: CopyTextCard,
 	research: JobCard,
 	pdf: PdfJobCard, // sources v0 — live smoke 2026-09-19 caught the gap: without this the tool-pdf dispatch part rendered nothing
 	// plan_* parts render nothing inline by design: the phase seam is a

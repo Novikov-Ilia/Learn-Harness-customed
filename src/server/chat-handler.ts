@@ -7,6 +7,10 @@ import {
 	type TeachingAgent,
 } from "../agent/teacher-agent.ts";
 import { piEngineForSpec, type PiEngine } from "../agent/models.ts";
+import { createPlanningAgent } from "../agent/planning-agent.ts";
+import { chatContextMessages, contextCompactionStore } from "./chat-context.ts";
+import { updateLearningNote } from "./learning-notes.ts";
+import { hydrateAttachmentMessages } from "./attachments.ts";
 import { connectionBackgroundAllowed as subscriptionBackgroundAllowed, connectionScopeCurrent, isSubscriptionProvider } from "../agent/subscription-connections.ts";
 import { nativeSubscriptionError } from "../agent/subscription-stream.ts";
 import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
@@ -51,7 +55,7 @@ import { ensureCompacted, kickCompaction, effectiveThresholdTokens } from "./com
 import { catalogContextLimits, refreshConnectionCatalog } from "./model-catalog.ts";
 import { emit } from "../core/events.ts";
 import { settledTurnResponse } from "./turn-runs.ts";
-import { asAgentMessages } from "../core/native-messages.ts";
+import { asAgentMessages, toLlmMessages } from "../core/native-messages.ts";
 import {
 	ChatInputError,
 	inputAppends,
@@ -279,7 +283,7 @@ export async function handleChatInput(
 	const modelIdForCompaction = `${conversationEngine.model.provider}:${conversationEngine.model.id}`;
 	await ensureCompacted(
 		{
-			chatStore: stores.chatStore,
+			chatStore: contextCompactionStore(stores.chatStore),
 			engine: piEngineForSpec(conversation, true, undefined, retentionForSlot("strong")),
 			canStart: () => connectionBackgroundAllowed(conversation.provider),
 			modelId: modelIdForCompaction,
@@ -409,7 +413,9 @@ export async function handleChatInput(
 	// the session is still probing: build the PROBER (quiz/ask + probe_done).
 	// Both share this whole composition (write-ahead persist, liveness,
 	// steers, usage, extraction) — only the agent differs.
-	const teaching = hasProbeDone(agentMessages);
+	const contextMessages = chatContextMessages(chatId, { chatStore: stores.chatStore, localMessages: agentMessages });
+	persistBaseCount = contextMessages.length - (stagedAutomatic ? appends.length : 0);
+	const teaching = !!record.planBlockId || hasProbeDone(contextMessages);
 	// BYOK (owner, 2026-09-22): the conversation chain was resolved by the
 	// turn gate above (chat.model override → strong slot → refused) — the
 	// engine build is pure from here; thinking levels clamp natively.
@@ -428,14 +434,14 @@ export async function handleChatInput(
 	// sub-agent JOB tools (research/demo/visual/pdf; adjudicated with the
 	// user: quiz/ask/fs/plan/probe_done are always-on).
 	if (isSubscriptionProvider(conversation.provider)) requestCycle = new SubscriptionRequestCycle({
-		initialMessages: asAgentMessages(agentMessages),
+		initialMessages: asAgentMessages(contextMessages),
 		staged: stagedAutomatic ? asAgentMessages(appends) : undefined,
 		foregroundOwed: !callPurpose.background,
 		purpose: callPurpose,
 		scopeCurrent: (scope) => connectionScopeCurrent(conversation.provider, scope),
 		commitStaged: () => {
 			stores.chatStore.saveMessages(chatId, merged);
-			persistBaseCount = merged.length;
+			persistBaseCount = contextMessages.length;
 			noteSteersDurable(chatId, merged);
 		},
 		restoreAutomatic: (automaticIds, retainedIds) => restoreUncommittedAutomatic(chatId, constructed, automaticIds, retainedIds),
@@ -444,7 +450,8 @@ export async function handleChatInput(
 		engine,
 		callPurpose,
 		requestCycle,
-		messages: asAgentMessages(agentMessages),
+		messages: asAgentMessages(contextMessages),
+		convertToLlm: (messages) => hydrateAttachmentMessages(toLlmMessages(messages), undefined, { model: engine.model }),
 		onUsage: collectUsage,
 		toolToggles: effective.agent.tools,
 		// Debug (owner, 2026-10-04): teacher/prober raw provider events under
@@ -462,6 +469,8 @@ export async function handleChatInput(
 	// uniform across kinds).
 	const constructed: TeachingAgent = buildAgent
 		? buildAgent({ ...agentOpts, teaching })
+		: record.kind === "planning"
+			? createPlanningAgent({ chatId, chatStore: stores.chatStore, jobs: { chatId, jobStore: stores.jobStore, spawn: (job, input) => void jobRunner.runJob(job.id, input), searchAvailable } }, agentOpts)
 		: record.kind === "practice"
 			? createPracticeAgent(
 					{
@@ -553,7 +562,7 @@ export async function handleChatInput(
 			// ids per response (DeepSeek) then gets fresh unique ids for this
 			// turn's calls at the wire boundary, on the wire, in the record,
 			// and in the next turn's context alike.
-			usedToolCallIds: new Set(collectToolCallIds(merged)),
+			usedToolCallIds: new Set(collectToolCallIds(contextMessages)),
 			// Stream-level failures are provider/transport internals — masked,
 			// like the SDK defaults. Tool-input validation messages never
 			// route through here: they ride the error-result path and reach the
@@ -602,7 +611,7 @@ export async function handleChatInput(
 				// PRACTICE (owner, 2026-10-04): practice sessions write nothing —
 				// no extraction, no graph, no coverage (v1: the session itself
 				// is the deliverable).
-				if ((!requestCycle || requestCycle.dispatched) && record.kind !== "practice" && extractionEnabled(effective.graph)) {
+				if ((!requestCycle || requestCycle.dispatched) && record.kind !== "practice" && record.kind !== "planning" && extractionEnabled(effective.graph)) {
 					// Fresh per-turn read of the graph section's chunk budget
 					// (extraction-UX redesign, 2026-09-24): the trigger compares
 					// against it and the pipeline's batches share it.
@@ -615,6 +624,10 @@ export async function handleChatInput(
 				// subsequent fetch reads the dismissal already in the record
 				// (the same ordering law as persistTurn itself).
 				applyParkedDismissal(stores.chatStore, chatId);
+				if (process.env.NODE_ENV !== "test" && !isAborted && (!requestCycle || requestCycle.dispatched)) {
+					if (connectionBackgroundAllowed(conversation.provider)) void updateLearningNote(chatId, { chatStore: stores.chatStore, engine: piEngineForSpec(conversation, true, undefined, retentionForSlot("strong")), modelId });
+					else stores.chatStore.saveLearningNoteError?.(chatId, "Automatic learning notes require enabling background requests for the selected provider.");
+				}
 				// LAST: a poller that sees not-in-flight must read an already-persisted
 				// record — endTurn only after persistTurn has done its job.
 				endTurn(chatId);
@@ -654,7 +667,7 @@ export async function handleChatInput(
 						const freshRecord = stores.chatStore.getChat(chatId);
 						if (!freshRecord) return null;
 						return {
-							chatStore: stores.chatStore,
+							chatStore: contextCompactionStore(stores.chatStore),
 							engine: kickEngine,
 							canStart: () => connectionBackgroundAllowed(spec.provider),
 							modelId: kickModelId,

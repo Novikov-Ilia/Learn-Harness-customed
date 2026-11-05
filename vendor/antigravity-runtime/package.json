@@ -1,0 +1,6 @@
+{
+  "name": "@learnharness/antigravity-runtime",
+  "version": "1.5.0",
+  "private": true,
+  "description": "Verified official Antigravity CLI runtime for the local desktop build"
+}

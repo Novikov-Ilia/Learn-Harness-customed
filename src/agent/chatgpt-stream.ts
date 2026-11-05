@@ -7,7 +7,8 @@ import type { AdmissionScope, ChatGPTDispatchLifecycle } from "./chatgpt-request
 import { capturePreparedBackgroundPayload } from "./background-capture.ts";
 
 const USAGE = "https://chatgpt.com/settings/usage";
-export function chatGPTStreamError(message: string): string {
+export function chatGPTStreamError(message: string, httpStatus?: number): string {
+	if (httpStatus !== undefined && [500, 502, 503, 504].includes(httpStatus)) return `ChatGPT service is temporarily unavailable (HTTP ${httpStatus}). Try again later. No automatic retry or API-key fallback was used.`;
 	if (/subscription_sharing_usage_limit_exceeded|quota|429/.test(message)) return `ChatGPT plan usage limit reached. Manage usage at ${USAGE}. No API-key fallback was used.`;
 	if (/scope|authorization_context|permission/.test(message)) return "ChatGPT plan permission is missing. Reconnect in Providers and authorize plan use. No API-key fallback was used.";
 	if (/expired|invalid_grant|401|invalid_user/.test(message)) return "Your ChatGPT session expired. Reconnect in Providers. No API-key fallback was used.";
@@ -17,6 +18,20 @@ export function chatGPTStreamError(message: string): string {
 	if (/catalog|model/.test(message)) return "The selected model is unavailable for this ChatGPT account. Refresh Providers and explicitly choose an available model. No API-key fallback was used.";
 	if (/incomplete|terminal|interrupted|stop reason/.test(message)) return "ChatGPT returned an incomplete response. Retry when ready; no API-key fallback was used.";
 	return "ChatGPT request failed. Check your connection and ChatGPT usage, then retry. No API-key fallback was used.";
+}
+
+/** Bounded local error text only: no headers, request bodies or raw events. */
+export function chatGPTDiagnosticText(message: unknown, accessToken = ""): string {
+	let text = typeof message === "string" ? message : "Unrecognized provider diagnostic";
+	if (accessToken) text = text.split(accessToken).join("[REDACTED]");
+	return text
+		.replace(/Bearer\s+[^\s"',;]+/gi, "Bearer [REDACTED]")
+		.replace(/(["']?(?:access_?token|refresh_?token|id_?token|api_?key|client_?secret|authorization)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, "$1[REDACTED]")
+		.replace(/\bsk-[A-Za-z0-9_-]+/g, "[REDACTED]")
+		.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[REDACTED]")
+		.replace(/data:[^;,\s]+;base64,[A-Za-z0-9+/=]+/gi, "[BINARY OMITTED]")
+		.replace(/https?:\/\/\S+/g, "[URL OMITTED]")
+		.slice(0, 2000);
 }
 
 /** Restrict the body at the final payload seam, even if caller samplingParams add fields. */
@@ -55,6 +70,10 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 			let partial = empty(logicalModel);
 			let completed = false;
 			let failure = "";
+			let providerDetail = "";
+			let httpStatus: number | undefined;
+			let requestId: string | undefined;
+			let accessToken = "";
 			let scope: AdmissionScope | undefined;
 			let committed = false;
 			let terminal = false;
@@ -65,6 +84,7 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 				scope = chatGPTScope(logicalModel.id);
 				lifecycle?.captured(scope);
 				const credentials = await chatGPTLease(scope, purpose);
+				accessToken = credentials.accessToken;
 				check();
 				// NEVER dispatch through Models under openai: that would expose ambient API-key fallback.
 				const transport: Model<"openai-responses"> = { ...logicalModel, api: "openai-responses", provider: "openai", baseUrl: "https://api.openai.com/v1", headers: undefined, samplingParams: undefined, compat: { ...logicalModel.compat, supportsDeveloperRole: true } };
@@ -75,12 +95,15 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 					signal,
 					maxRetries: 0,
 					headers: { "OpenAI-Beta": null, ...options?.headers },
-					fetch: (input, init) => {
+					fetch: async (input, init) => {
 						check();
 						if (committed) throw new Error("ChatGPT does not retry admitted requests");
 						lifecycle?.beforeDispatch(scope!);
 						committed = true;
-						return delegate(input, init);
+						const response = await delegate(input, init);
+						httpStatus = response.status;
+						requestId = response.headers.get("x-request-id") ?? undefined;
+						return response;
 					},
 					onPayload: async (raw, model) => {
 						const replacement = await options?.onPayload?.(raw, model);
@@ -90,9 +113,12 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 						return payload;
 					},
 					onProviderStreamEvent: async (raw, model) => {
-						const event = raw as { type?: string; code?: string; error?: { code?: string }; response?: { error?: { code?: string }; status?: string } };
+						const event = raw as { type?: string; code?: string; message?: string; error?: { code?: string; message?: string }; response?: { error?: { code?: string; message?: string }; status?: string } };
 						if (event.type === "response.completed" && event.response?.status === "completed" && !event.response?.error) completed = true;
-						if (["response.incomplete", "response.failed", "error"].includes(event.type ?? "") || event.response?.error) failure = event.code || event.error?.code || event.response?.error?.code || "incomplete terminal response";
+						if (["response.incomplete", "response.failed", "error"].includes(event.type ?? "") || event.response?.error) {
+							failure = event.code || event.error?.code || event.response?.error?.code || "incomplete terminal response";
+							providerDetail = event.message || event.error?.message || event.response?.error?.message || "";
+						}
 						await options?.onProviderStreamEvent?.(raw, model);
 					},
 				});
@@ -110,8 +136,16 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 				}
 			} catch (err) {
 				if (terminal) return;
+				const diagnostic = err instanceof Error ? err.message : typeof err === "string" ? err : "Unknown provider error";
+				console.error("[chatgpt-request]", JSON.stringify({
+					model: chatGPTDiagnosticText(logicalModel.id, accessToken), background: purpose,
+					dispatched: committed, httpStatus,
+					requestId: requestId ? chatGPTDiagnosticText(requestId, accessToken) : undefined,
+					error: chatGPTDiagnosticText(diagnostic, accessToken),
+					providerDetail: providerDetail ? chatGPTDiagnosticText(providerDetail, accessToken) : undefined,
+				}));
 				if (!committed) lifecycle?.noDispatch(await chatGPTDenial(scope, controller, options?.signal?.aborted === true, purpose));
-				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: chatGPTStreamError(err instanceof Error ? err.message : "") };
+				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: chatGPTStreamError(err instanceof Error ? err.message : "", httpStatus) };
 				output.push({ type: "error", reason: partial.stopReason as "error" | "aborted", error: partial });
 			} finally { release(); output.end(); }
 		})();

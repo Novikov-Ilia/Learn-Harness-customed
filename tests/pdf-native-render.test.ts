@@ -116,6 +116,21 @@ describe("native pdf_render (pdfjs paints, @napi-rs/canvas hosts)", () => {
 		assert.ok(fs.statSync(fonts).isDirectory(), "the filesystem accepts the shared font path");
 	});
 
+	it("decodes a CCITT Group 4 scan instead of silently returning a white page", async () => {
+		const fixture = path.join(import.meta.dirname, "fixtures", "ccitt-scan.pdf");
+		const [page] = await realHeadless.renderPdfPages(fixture, [1], { dpi: 72 });
+		assert.ok(page);
+		const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+		const image = await loadImage(page.png);
+		const ctx = createCanvas(128, 96).getContext("2d");
+		ctx.drawImage(image, 0, 0);
+		const white = ctx.getImageData(100, 48, 1, 1).data;
+		const black = ctx.getImageData(32, 48, 1, 1).data;
+		assert.ok(white[0]! > 240, "scan background is white");
+		assert.ok(black[0]! < 15, "the black rectangle must actually be decoded");
+	});
+
+
 	it("renders fixture pages as canonical single-IDAT PNGs", async () => {
 		const pages = await realHeadless.renderPdfPages(FIXTURE, [1, 3], { dpi: 150 });
 		assert.equal(pages.length, 2, "requested pages 1 and 3");

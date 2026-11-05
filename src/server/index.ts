@@ -7,7 +7,10 @@
 export * from "./chat-handler.ts";
 export * from "./events-stream.ts";
 export * from "./chats.ts";
+export * from "./chat-context.ts";
+export * from "./learning-notes.ts";
 export * from "./graph.ts";
+export * from "./graph-workbench-runtime.ts";
 export * from "./source-organization.ts";
 export * from "./source-deletion.ts";
 export { NotesImportError } from "../agent/subagents/extraction.ts";
@@ -54,3 +57,6 @@ export { claudeCodeInstallationResponse } from "./claude-code.ts";
 // No import side effects; the boot sync lives in stores.ts.
 export * from "./custom-provider.ts";
 export { customProviderGet, customProviderMutation } from "./custom-provider-http.ts";
+export * from "./attachments.ts";
+
+export { geminiCliConnectionResponse } from "./gemini-cli.ts";

@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useChatSession } from "@/components/session";
 import { visibleQueuedSteers } from "@/components/session-core";
 import { SetupDialog } from "@/components/setup-dialog";
@@ -25,6 +26,9 @@ import { MalformedQuestion } from "@/components/malformed-question";
 import { artifactRenderers } from "@/components/artifacts";
 import { SubagentSteerCard } from "@/components/artifacts/steer-card";
 import { ChatSessionComposer } from "@/components/composer";
+import { CancelQuestionButton } from "@/components/cancel-question-button";
+import { ChatLearningPanel } from "@/components/chat-learning-panel";
+import { hasPendingAttachmentUploads, usePendingAttachmentUploads } from "@/components/attachment-upload-state";
 import { useEnterSubmits } from "@/components/enter-submits";
 import { blurAfterPointerClick } from "@/components/focus-hygiene";
 import { dockStateKey } from "@/components/dock-state-key";
@@ -44,6 +48,7 @@ import {
 	textPartMessageId,
 	kbdEventForAction as kbdEventForChat,
 	type ChatInput,
+	type ChatKind,
 	type ChatSettings,
 	type LhMessage,
 	type ModelSlotName,
@@ -231,7 +236,7 @@ export function Chat({
 	/** The session kind (practice sessions, owner 2026-10-04): practice
 	 *  renders no phase chip (no probe→teach arc applies) and a Practice
 	 *  tag rides the header instead. */
-	kind?: "teach" | "practice";
+	kind?: ChatKind;
 	initialPrompt?: string;
 	/** A teacher turn is running server-side but attached to no client
 	 * (navigated away mid-turn, returned while in flight). */
@@ -246,6 +251,9 @@ export function Chat({
 	 *  only decides whether the pill rides the composer. */
 	initialConfigured?: boolean;
 }) {
+	const router = useRouter();
+	const attachmentScope = useRef<HTMLDivElement>(null);
+	const attachmentsPending = usePendingAttachmentUploads(attachmentScope);
 	// Reattach plumbing (background-turn runner wave): the hook holds the
 	// settled terminal's callback — a stable ref assigned below, once
 	// syncFromServer exists (refs, not closures: no stale capture).
@@ -500,7 +508,7 @@ export function Chat({
 	const submitThinking = useCallback(
 		(text: string) => {
 			const problem = activeProblemRef.current;
-			if (!problem) return;
+			if (!problem || hasPendingAttachmentUploads(attachmentScope.current)) return;
 			void send({ type: "thinking", problemCallId: problem.toolCallId, text });
 		},
 		[send],
@@ -752,7 +760,7 @@ export function Chat({
 	// recovers from it. Later compaction requires new input instead.
 	const retryable = (status === "ready" || status === "error") && !busy && !compacting && endsInFailedTurn(nativeMessages);
 	const retryFailedTurn = () => retryFailedResponse(send, draftRef);
-	const sendAllowed = !pending && !activeProblem && !compacting;
+	const sendAllowed = !pending && !activeProblem && !compacting && !attachmentsPending;
 
 	/* THE PRACTICE PAUSE (owner round 16): between problems — practice
 	 * kind, nothing active, nothing in flight, and at least one problem
@@ -772,7 +780,7 @@ export function Chat({
 				),
 		);
 	const sendNext = useCallback(() => {
-		if (!nextReady) return;
+		if (!nextReady || hasPendingAttachmentUploads(attachmentScope.current)) return;
 		void send({ type: "next" });
 	}, [nextReady, send]);
 
@@ -1200,7 +1208,7 @@ export function Chat({
 	});
 
 	const onSend = () => {
-		if (pending || compacting) return;
+		if (pending || compacting || hasPendingAttachmentUploads(attachmentScope.current)) return;
 		/* FINISH DICTATION FIRST (owner, 2026-10-01): a learner who keeps
 		 * talking right through Enter must not lose the tail — stop the run,
 		 * let the last finals land in the composer, then send the REF value
@@ -1212,7 +1220,7 @@ export function Chat({
 		void dictation.finish().then(doSteerOrSend);
 	};
 	const doSend = () => {
-		if (busy || pending || compacting) return;
+		if (busy || pending || compacting || hasPendingAttachmentUploads(attachmentScope.current)) return;
 		const t = textRef.current.trim();
 		if (!t) return;
 		if (zeroKeys) {
@@ -1242,7 +1250,7 @@ export function Chat({
 	 * time the send's POST resolved, so the steer lands. Idle takes the
 	 * plain send; a raced settle 409s and falls back to exactly that. */
 	const doSteerOrSend = () => {
-		if (pending || compacting) return;
+		if (pending || compacting || hasPendingAttachmentUploads(attachmentScope.current)) return;
 		const t = textRef.current.trim();
 		if (!t) return;
 		if (busy) {
@@ -1277,7 +1285,7 @@ export function Chat({
 		    chip) spans from the left sidebar's edge to the panel's edge. The
 		    dock overlays the column bottom (outside the scroller); a spacer in
 		    the transcript reserves its height. */}
-		<div className="flex h-dvh">
+		<div ref={attachmentScope} data-attachment-scope="" className="flex h-dvh">
 			<div className="flex min-w-0 flex-1 flex-col">
 				{/* The top bar is its own block (owner, top-fade round 4): in flow
 				    above the scroller on the plain page background — no gradient. Its
@@ -1356,6 +1364,7 @@ export function Chat({
 					{/* The plan chip (owner, plan-placement round): session-level
 					    structure beside the phase chip — access to the full-DAG popup
 					    at every width; the marginalia is the wide-screen glance view. */}
+					{(pending || activeProblem) && <span className="lh-no-drag"><CancelQuestionButton onCancel={() => confirmAbort(pending ? "question" : "problem")} /></span>}
 					{planTree && (
 						<Hint label="Open the full plan" side="bottom">
 <button
@@ -1379,7 +1388,7 @@ export function Chat({
 					{/* Practice (owner, 2026-10-04): the coverage ring hides —
 				    practice never extracts, so an ever-filling ring with no
 				    run behind it would lie. */}
-					{kind !== "practice" && <CoverageRing chatId={chatId} refreshKey={coverageTick} />}
+					{kind === "teach" && <CoverageRing chatId={chatId} refreshKey={coverageTick} />}
 					{/* Practice sessions: no phase arc — a quiet Practice tag
 					    instead of the phase chip. */}
 					{kind === "practice" ? (
@@ -1392,10 +1401,13 @@ export function Chat({
 							<DumbbellIcon className="size-3" />
 							Practice
 						</span>
+					) : kind === "planning" ? (
+						<span data-testid="phase-chip" data-phase="planning" className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Planning</span>
 					) : (
 						<PhaseChip phase={phases.at(-1) ?? "probe"} />
 					)}
 				</TopBar>
+				<div className="max-h-[40vh] shrink-0 overflow-y-auto border-b border-border/50"><ChatLearningPanel chatId={chatId} kind={kind} onBranchCreated={(id) => router.push(`/chat/${id}`)} /></div>
 
 				<SessionFind scopeRef={sessionFindScopeRef} scrollContextRef={scrollContextRef} />
 				<div ref={sessionFindScopeRef} className="relative flex min-h-0 flex-1">
@@ -1405,8 +1417,8 @@ export function Chat({
 						<div data-session-find-root="" className={`${COLUMN} flex flex-1 flex-col gap-4 pt-4`}>
 							{messages.length === 0 && !busy && (
 								<ConversationEmptyState
-									title="New session"
-									description="The teacher will open by probing what you already know."
+									title={kind === "planning" ? "New learning plan" : kind === "practice" ? "New practice session" : "New session"}
+									description={kind === "planning" ? "Attach materials, describe your goal, and assess your starting knowledge before choosing a block to study." : "The teacher will open by probing what you already know."}
 								/>
 							)}
 
@@ -1758,7 +1770,7 @@ export function Chat({
 						/>
 					}
 					onSubmitAnswer={(output) => {
-						if (!pending) return;
+						if (!pending || hasPendingAttachmentUploads(attachmentScope.current)) return;
 						// THE ANSWER IS THE QUESTION CALL'S TOOL RESULT (fork 1, owner
 						// 2026-09-26): one input event, one turn — the hook appends
 						// the optimistic graded result (the AnsweredCard shows at

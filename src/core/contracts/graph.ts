@@ -40,6 +40,9 @@ export interface GraphEdge {
  *  conclusion. A chain referencing a dead node dies with it (full death
  *  cascades through every referencing chain). */
 export interface GraphChain {
+	/** A reanalysis inference is explicitly distinguished from a quoted source argument. */
+	origin?: "reanalysis";
+	reason?: string;
 	/** "arg_" + nanoid-like (store-assigned, the node-minting pattern). */
 	id: string;
 	/** Node ids of the argument's premises — at least one, jointly
@@ -301,6 +304,9 @@ export interface Cluster {
 }
 
 export interface GraphSnapshot {
+	/** Independent region names and saved, explicitly requested explanations. */
+	regionNames?: Record<string, string>;
+	explanations?: Record<string, { text: string; generatedAt: string }>;
 	/** Proposition nodes + the DERIVED implication nodes (one per chain,
 	 *  id = chain id) — what the canvas renders. */
 	nodes: GraphNode[];

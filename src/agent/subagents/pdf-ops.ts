@@ -55,6 +55,11 @@ export function standardFontsDir(): string {
 	return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "node_modules", "pdfjs-dist", "standard_fonts") + "/";
 }
 
+/** Runtime decoders for scanned CCITT/JBIG2 and JPEG2000 PDF pages. */
+export function wasmDir(): string {
+ return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "node_modules", "pdfjs-dist", "wasm") + "/";
+}
+
 async function openDocument(filePath: string) {
 	return openBytes(new Uint8Array(await fs.readFile(filePath)));
 }
@@ -63,9 +68,8 @@ async function openBytes(data: Uint8Array) {
 	const pdfjs = await loadPdfjs();
 	// The legacy build in plain node runs on a main-thread fake worker (no
 	// workerSrc needed); teardown is the loading task's destroy().
-	// verbosity 0 = errors only — scanned PDFs (JBIG2 XObjects) otherwise
-	// flood the log with per-page warnings (live-smoke finding 2026-09-19).
-	const task = pdfjs.getDocument({ data, standardFontDataUrl: standardFontsDir(), verbosity: 0 });
+	// Keep decoder warnings visible: a failed scan can otherwise render white.
+	const task = pdfjs.getDocument({ data, standardFontDataUrl: standardFontsDir(), wasmUrl: wasmDir(), verbosity: 1 });
 	return { doc: await task.promise, task };
 }
 

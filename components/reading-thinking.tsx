@@ -63,6 +63,7 @@ export function ReadingThinkingField({
 				Thinking while reading
 			</div>
 			<PathInput
+				defaultDropTarget={claim}
 				value={draft}
 				onValueChange={applyDraft}
 				/* py-0.5 (owner round, 2026-10-07): the scrollbar fix. Source

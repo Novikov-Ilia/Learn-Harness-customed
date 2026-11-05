@@ -1,3 +1,15 @@
+# LearnHarness — custom edition
+
+Personal customization of [amosblomqvist/learnharness](https://github.com/amosblomqvist/learnharness), licensed under AGPL-3.0-only. Upstream authorship and history are preserved.
+
+Adds planning chats and study branches, learning notes, direct attachments, graph editing and mathematical rendering, Gemini via Antigravity CLI, and downloadable files and clipboard actions in chat.
+
+This repository contains source code. Custom Linux AppImage builds are distributed separately through the private `Novikov-Ilia/Learn-Harness-image` repository. The upstream download links below refer to the original project. User profiles, conversations, attachments, credentials, and local delivery reports are excluded.
+
+The bundled Antigravity runtime is prepared from the official download by `scripts/prepare-antigravity.mjs`; its binary is not stored in this source repository. The current custom build targets Linux x86_64. Upstream CI and release configuration remain for reference; no build or release workflow is invoked by this publication.
+
+---
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lh_banner_dark.png">

@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { PATHS } from "../../config.ts";
 import { emit } from "../core/events.ts";
 import type { ChatStore } from "../core/ports.ts";
-import type { ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, PlanTree, TurnUsage } from "../core/contracts.ts";
+import type { ChatRecord, ChatSettings, ChatSummary, ChatKind, CreateChatOptions, LearningNote, ExtractionRunUsage, PlanTree, TurnUsage } from "../core/contracts.ts";
 import { CURRENT_CHAT_VERSION } from "../core/contracts.ts";
 import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";
@@ -32,7 +32,7 @@ function chatFile(id: string): string {
  *  phase, busy, pendingQuestion) is already announced by turn-started /
  *  turn-settled, which the sidebar refetches on. Silence here is law,
  *  not oversight. */
-function createChat(title: string, kind?: "practice"): ChatRecord {
+function createChat(title: string, kind?: Exclude<ChatKind, "teach">, options: CreateChatOptions = {}): ChatRecord {
 	const now = new Date().toISOString();
 	const record: ChatRecord = {
 		id: `chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
@@ -42,7 +42,8 @@ function createChat(title: string, kind?: "practice"): ChatRecord {
 		messages: [],
 		// Practice sessions carry the marker; teach stays ABSENT (absence
 		// reads as teach — pre-practice records never migrate).
-		...(kind === "practice" ? { kind: "practice" as const } : {}),
+		...(kind ? { kind } : {}),
+		...options,
 	};
 	fs.mkdirSync(PATHS.chats, { recursive: true });
 	writeChat(record);
@@ -84,7 +85,7 @@ function listChats(): ChatSummary[] {
 			.filter((f) => f.endsWith(".json"))
 			.map((f) => getChat(f.slice(0, -5)))
 			.filter((r): r is ChatRecord => r !== null)
-			.map(({ messages, tree, turns, extractions, ...summary }) => {
+			.map(({ messages, tree, turns, extractions, contextSnapshot: _snapshot, learningNote: _note, learningNoteError: _noteError, ...summary }) => {
 				// Per-record isolation (Wave B): a record whose messages fail the
 				// projection (e.g. pre-Wave-B UIMessage-format scratch — the
 				// zero-back-compat wipe makes these "corrupt") must not blank the
@@ -107,6 +108,7 @@ function listChats(): ChatSummary[] {
 						// NOT record-derived — the API route merges it (ChatListItem).
 						phase: phaseAt3Lh(messages),
 						pendingQuestion: danglingQuestionOf(messages) !== null,
+						pendingProblem: activeProblemOf(messages) !== null,
 					};
 				} catch (err) {
 					console.error(`[chat ${summary.id}] summary projection failed:`, err);
@@ -186,6 +188,7 @@ function renameChat(id: string, title: string): ChatRecord {
  *  into a 404. The record's graph traces and jobs are the route's
  *  choreography (core/graph-deletion.ts), not the store's. */
 function deleteChat(id: string): boolean {
+	if (listChats().some((chat) => chat.parentId === id)) throw new Error("This chat has child branches. Delete its children first.");
 	try {
 		fs.unlinkSync(chatFile(id));
 		emit("chats-changed", {}); // only a real removal — the present-entry law
@@ -193,6 +196,22 @@ function deleteChat(id: string): boolean {
 	} catch {
 		return false; // never existed, already deleted, or unreadable — same answer
 	}
+}
+
+function saveLearningNote(id: string, note: LearningNote): void {
+	const record = getChat(id);
+	if (!record) throw new Error(`Chat not found: ${id}`);
+	record.learningNote = note;
+	delete record.learningNoteError;
+	writeChat(record);
+	emit("record-changed", { chatId: id });
+}
+function saveLearningNoteError(id: string, error: string): void {
+	const record = getChat(id);
+	if (!record) return;
+	record.learningNoteError = error;
+	writeChat(record);
+	emit("record-changed", { chatId: id });
 }
 
 /** Persist the session plan tree (plan tools call this in execute). */
@@ -207,6 +226,8 @@ function saveTree(id: string, tree: PlanTree): void {
 
 export const chatStore: ChatStore = {
 	createChat,
+	saveLearningNote,
+	saveLearningNoteError,
 	getChat,
 	listChats,
 	saveMessages,

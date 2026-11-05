@@ -47,6 +47,8 @@ import type {
 	SessionCheckpoint,
 } from "../core/contracts.ts";
 import type { GraphStore } from "../core/ports.ts";
+import type { ThematicGroup } from "../core/graph-personalization.ts";
+import { graphPersonalizationStore } from "./graph-personalization.ts";
 
 // ─── JSONL primitives ────────────────────────────────────────────────────────
 
@@ -128,7 +130,8 @@ const isCoverageEntry = (v: unknown): v is CoverageEntry =>
 
 // ─── the port implementation ────────────────────────────────────────────────
 
-export const graphStore: GraphStore = {
+export const graphStore: GraphStore & { readThematicGroups(): ThematicGroup[] } = {
+	readThematicGroups: () => graphPersonalizationStore.read().groups,
 	appendNode(node: GraphNode): void {
 		appendLine(LEDGER_FILES.nodes, node);
 	},

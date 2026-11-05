@@ -2,8 +2,12 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
+import { PaperclipIcon } from "lucide-react";
 import { FilePathChip } from "./file-path-chip";
 import { cn } from "../lib/utils";
+import { ATTACHMENT_ACCEPT } from "../src/core/index.ts";
+import { filesFromTransfer, uploadAttachments } from "./attachment-client.ts";
+import { beginAttachmentUpload, hasPendingAttachmentUploads } from "./attachment-upload-state.ts";
 import {
 	adjacentPathRange, atomicPathRange, clampPathSelection, insertFilePaths,
 	normalizePathEdit, normalizePathInputValue, pathInputStaticRange, PathInputHistory, readPathInput, readPathSelection, renderPathInput,
@@ -12,6 +16,7 @@ import {
 } from "./path-input-dom";
 
 export const INSERT_FILE_PATHS_EVENT = "lh:insert-file-paths";
+export const UPLOAD_FILES_EVENT = "lh:upload-files";
 export type PathInputProps = Omit<React.HTMLAttributes<HTMLDivElement>, "children" | "dangerouslySetInnerHTML" | "defaultValue" | "onChange"> & {
 	value: string;
 	onValueChange: (value: string) => void;
@@ -20,12 +25,16 @@ export type PathInputProps = Omit<React.HTMLAttributes<HTMLDivElement>, "childre
 	defaultDropTarget?: boolean;
 	/** Native text-input semantics: strip CR/LF and leave Enter to the caller. */
 	singleLine?: boolean;
+	/** Short answer rows can explicitly retain file/image input. */
+	attachments?: boolean;
 };
 
 type ChipHost = { host: HTMLElement; path: string };
 type Controller = {
 	external: (value: string) => void;
 	remember: () => void;
+	upload: (files: File[]) => void;
+	cancelUploads: () => void;
 };
 
 /**
@@ -33,21 +42,25 @@ type Controller = {
  * views of it. React never reconciles the editable DOM after a native mutation.
  */
 export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(function PathInput({
-	value, onValueChange, placeholder, autoFocus, defaultDropTarget = false, singleLine = false, className,
+	value, onValueChange, placeholder, autoFocus, defaultDropTarget = false, singleLine = false, attachments, className,
 	onKeyDown, onFocus, onBlur, onInput, onPaste, onCopy, onCut,
 	onCompositionStart, onCompositionEnd, ...props
 }, forwardedRef) {
 	const rootRef = React.useRef<HTMLDivElement>(null);
 	const controllerRef = React.useRef<Controller | null>(null);
-	const callbacks = React.useRef({ onValueChange, singleLine });
+	const attachmentsEnabled = attachments ?? !singleLine;
+	const callbacks = React.useRef({ onValueChange, singleLine, attachmentsEnabled });
 	const composing = React.useRef(false);
 	const [chips, setChips] = React.useState<ChipHost[]>([]);
+	const [uploading, setUploading] = React.useState(false);
+	const [attachmentError, setAttachmentError] = React.useState("");
+	const pickerRef = React.useRef<HTMLInputElement>(null);
 	// Keep this text child immutable: SSR/hydration gets the complete draft,
 	// while subsequent React renders leave the browser-owned editable DOM alone.
 	const initial = React.useRef({ value: normalizePathInputValue(value, singleLine), autoFocus, singleLine });
 
 	React.useImperativeHandle(forwardedRef, () => rootRef.current!, []);
-	React.useLayoutEffect(() => { callbacks.current = { onValueChange, singleLine }; }, [onValueChange, singleLine]);
+	React.useLayoutEffect(() => { callbacks.current = { onValueChange, singleLine, attachmentsEnabled }; }, [onValueChange, singleLine, attachmentsEnabled]);
 
 	React.useLayoutEffect(() => {
 		const root = rootRef.current!;
@@ -60,6 +73,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		let pendingPaths: string[] = [];
 		let pendingPaste: string[] = [];
 		let mounted = true;
+		const uploads = new Map<AbortController, () => void>();
 		const history = new PathInputHistory();
 
 		function remember() {
@@ -106,6 +120,42 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		function insertEvent(event: Event) {
 			const paths: unknown = (event as CustomEvent<unknown>).detail;
 			if (Array.isArray(paths) && paths.every((path) => typeof path === "string")) stage(paths);
+		}
+		async function upload(files: File[]) {
+			if (!files.length || !callbacks.current.attachmentsEnabled) return;
+			remember();
+			const controller = new AbortController();
+			const finishUpload = beginAttachmentUpload(root);
+			uploads.set(controller, finishUpload);
+			setUploading(true);
+			setAttachmentError("");
+			try {
+				const savedFiles = await uploadAttachments(files, fetch, controller.signal);
+				if (mounted && !controller.signal.aborted) stage(savedFiles.map(file => file.path));
+			} catch (error) {
+				if (mounted && !controller.signal.aborted) setAttachmentError(error instanceof Error ? error.message : "Could not upload attachments.");
+			} finally {
+				finishUpload();
+				uploads.delete(controller);
+				if (mounted) setUploading(uploads.size > 0);
+			}
+		}
+		function cancelUploads() { for (const [controller, finish] of uploads) { controller.abort(); finish(); } }
+		function dragOver(event: DragEvent) {
+			if (callbacks.current.attachmentsEnabled && Array.from(event.dataTransfer?.types ?? []).includes("Files")) event.preventDefault();
+		}
+		function drop(event: DragEvent) {
+			const files = filesFromTransfer(event.dataTransfer);
+			if (!files.length || !callbacks.current.attachmentsEnabled) return;
+			event.preventDefault();
+			void upload(files);
+		}
+		function uploadEvent(event: Event) {
+			const files = (event as CustomEvent<File[]>).detail;
+			if (Array.isArray(files) && files.every(file => file && typeof file.name === "string")) void upload(files);
+		}
+		function blockSubmitWhileUploading(event: Event) {
+			if (hasPendingAttachmentUploads(root)) { event.preventDefault(); event.stopImmediatePropagation(); }
 		}
 		function beforeInput(event: InputEvent) {
 			if (composing.current || event.isComposing) return;
@@ -155,6 +205,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			change({ value: nextValue, selection }, true, previous);
 		}
 		function keyDown(event: KeyboardEvent) {
+			if (hasPendingAttachmentUploads(root) && event.key === "Enter") { event.preventDefault(); event.stopImmediatePropagation(); return; }
 			if (composing.current || event.isComposing || event.keyCode === 229) return;
 			// Shift+Delete is native Cut on Windows/Linux, not forward deletion.
 			// Let the browser dispatch cut so our clipboard handler can own it.
@@ -174,6 +225,8 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		function paste(event: ClipboardEvent) {
 			if (event.defaultPrevented) return;
 			event.preventDefault();
+			const files = filesFromTransfer(event.clipboardData);
+			if (files.length && callbacks.current.attachmentsEnabled) { void upload(files); return; }
 			const text = event.clipboardData?.getData("text/plain") ?? "";
 			// Image/file/HTML-only clipboard contents are not text replacement.
 			if (text === "") return;
@@ -224,6 +277,8 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		}
 		controllerRef.current = {
 			remember,
+			upload: (files) => { void upload(files); },
+			cancelUploads,
 			external(next) {
 				next = normalizePathInputValue(next, callbacks.current.singleLine);
 				if (composing.current) { pendingExternal = next; return; }
@@ -242,35 +297,54 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 		paint(saved, false);
 		if (initial.current.autoFocus) { root.focus(); restorePathSelection(root, saved); }
 		root.addEventListener(INSERT_FILE_PATHS_EVENT, insertEvent);
+		root.addEventListener(UPLOAD_FILES_EVENT, uploadEvent);
 		root.addEventListener("beforeinput", beforeInput);
 		root.addEventListener("input", input);
 		root.addEventListener("keydown", keyDown);
 		root.addEventListener("paste", paste);
+		root.addEventListener("dragover", dragOver);
+		root.addEventListener("drop", drop);
 		root.addEventListener("copy", copy);
 		root.addEventListener("cut", copy);
 		root.addEventListener("compositionstart", startComposition);
 		root.addEventListener("compositionend", endComposition);
 		document.addEventListener("selectionchange", remember);
+		const form = root.closest("form");
+		form?.addEventListener("submit", blockSubmitWhileUploading, true);
 		return () => {
 			mounted = false;
+			cancelUploads();
 			composing.current = false;
 			controllerRef.current = null;
 			root.removeEventListener(INSERT_FILE_PATHS_EVENT, insertEvent);
+			root.removeEventListener(UPLOAD_FILES_EVENT, uploadEvent);
 			root.removeEventListener("beforeinput", beforeInput);
 			root.removeEventListener("input", input);
 			root.removeEventListener("keydown", keyDown);
 			root.removeEventListener("paste", paste);
+			root.removeEventListener("dragover", dragOver);
+			root.removeEventListener("drop", drop);
 			root.removeEventListener("copy", copy);
 			root.removeEventListener("cut", copy);
 			root.removeEventListener("compositionstart", startComposition);
 			root.removeEventListener("compositionend", endComposition);
 			document.removeEventListener("selectionchange", remember);
+			form?.removeEventListener("submit", blockSubmitWhileUploading, true);
 		};
 	}, []);
 
 	React.useLayoutEffect(() => { controllerRef.current?.external(value); }, [value, singleLine]);
 
 	return <>
+		{attachmentsEnabled && <div className="flex shrink-0 items-center gap-1 px-1" data-testid="attachment-controls">
+			<input ref={pickerRef} type="file" multiple accept={ATTACHMENT_ACCEPT} className="hidden" aria-label="Choose attachment files" onChange={(event) => {
+				controllerRef.current?.upload(Array.from(event.currentTarget.files ?? []));
+				event.currentTarget.value = "";
+			}} />
+			<button type="button" aria-label="Attach files" title="Attach PDF, images or text files" className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onMouseDown={(event) => { event.preventDefault(); controllerRef.current?.remember(); }} onClick={() => pickerRef.current?.click()}><PaperclipIcon className="size-4" /></button>
+			{uploading && <span role="status" className="text-xs text-muted-foreground">Uploading… <button type="button" className="underline" onClick={() => controllerRef.current?.cancelUploads()}>Cancel</button></span>}
+			{attachmentError && <span role="alert" className="max-w-64 text-xs text-destructive">{attachmentError}</span>}
+		</div>}
 		<div
 			{...props}
 			ref={rootRef}
@@ -278,6 +352,7 @@ export const PathInput = React.forwardRef<HTMLDivElement, PathInputProps>(functi
 			aria-label={props["aria-label"] ?? placeholder}
 			aria-multiline={singleLine ? "false" : "true"}
 			aria-placeholder={placeholder}
+			aria-busy={uploading || undefined}
 			contentEditable
 			suppressContentEditableWarning
 			data-file-path-input=""

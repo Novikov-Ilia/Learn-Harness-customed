@@ -249,11 +249,12 @@ export function applyClusterLabels(
 	maxWidth: number,
 	maxLines: number,
 	measure: (s: string) => number,
+	allowUnnamed = false,
 ): boolean {
 	let changed = false;
 	for (const cluster of clusters) {
 		if (!labels.has(cluster.id)) continue;
-		if (cluster.label == null) continue; // hull silence: gone records stay silent
+		if (cluster.label == null && !allowUnnamed) continue; // source renames cannot name gone records
 		const label = labels.get(cluster.id) ?? null;
 		if (label === cluster.label) continue;
 		cluster.label = label;
@@ -262,7 +263,7 @@ export function applyClusterLabels(
 	if (!changed) return false;
 	for (const rm of regionMeta) {
 		if (!labels.has(rm.id)) continue;
-		if (rm.label == null) continue;
+		if (rm.label == null && !allowUnnamed) continue;
 		const label = labels.get(rm.id) ?? null;
 		rm.label = label;
 		rm.lines = label
@@ -835,14 +836,14 @@ export class GraphCanvasRenderer {
 	 *  data-side cluster record (so the next geometry rebuild —
 	 *  visibility/settings/size — keeps the fresh label). Nodes, the
 	 *  sim, positions, and the pending commit are never touched. */
-	setClusterLabels(labels: ReadonlyMap<string, string | null>): void {
+	setClusterLabels(labels: ReadonlyMap<string, string | null>, allowUnnamed = false): void {
 		const data = this.data;
 		if (!data) return;
 		const settings = this.settings;
 		// No settings yet → nothing is drawn; patch the data side only and
 		// let the next build derive the wrap (same guard the build uses).
 		if (!settings) {
-			applyClusterLabels(data.clusters, [], labels, REGION_LABEL_MAX_WIDTH, REGION_LABEL_MAX_LINES, () => 0);
+			applyClusterLabels(data.clusters, [], labels, REGION_LABEL_MAX_WIDTH, REGION_LABEL_MAX_LINES, () => 0, allowUnnamed);
 			return;
 		}
 		const ctx = this.ctx;
@@ -855,6 +856,7 @@ export class GraphCanvasRenderer {
 			REGION_LABEL_MAX_WIDTH,
 			REGION_LABEL_MAX_LINES,
 			(s) => ctx.measureText(s).width,
+			allowUnnamed,
 		);
 		ctx.font = prevFont;
 		if (changed) this.markDirty();

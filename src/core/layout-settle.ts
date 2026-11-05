@@ -2,6 +2,7 @@ import type { GraphChain, GraphNode, Position } from "./contracts.ts";
 import { incrementalLayout } from "./layout.ts";
 import { attachImpToCommunities, birthSessionPartition } from "./session-clusters.ts";
 import { deriveView, getGraph } from "./graph.ts";
+import { attachThematicImplications, personalizedClusters, type ThematicGroup } from "./graph-personalization.ts";
 
 /**
  * The merge-time settle: recompute the resting layout from the CURRENT
@@ -28,6 +29,7 @@ export function settleGraphLayout(graphStore: {
 	readChains(): GraphChain[];
 	readPositions(): Record<string, Position>;
 	writePositions(positions: Record<string, Position>): void;
+	readThematicGroups?(): ThematicGroup[];
 }): void {
 	const graph = getGraph(graphStore);
 	if (graph.nodes.length === 0) return;
@@ -38,13 +40,16 @@ export function settleGraphLayout(graphStore: {
 	// core/session-clusters.ts, wave 7) — one cluster concept everywhere.
 	// PROPOSITIONS ONLY (owner, 2026-09-30): implication nodes never
 	// partition; the stored world clusters, its image follows.
-	const communities = birthSessionPartition(graph.nodes);
+	const birthCommunities = birthSessionPartition(graph.nodes);
+	const groups = graphStore.readThematicGroups?.() ?? [];
+	const communities = groups.length ? personalizedClusters(graph.nodes, birthCommunities.map((c) => ({ ...c, label: null })), { version: 1, groups, regionNames: {}, explanations: {} }) : birthCommunities;
 	// The SAME imp-node assignment the snapshot renders (majority among
 	// premises' births — core/session-clusters.ts): the resting ledger and
 	// the live sim must agree on where bundles belong, or the first live
 	// tick would fight the settle. Unfiltered here (settle pulls every
 	// community, hulls are a canvas-only concern).
-	attachImpToCommunities(communities, graph.nodes, graph.chains);
+	if (groups.length) attachThematicImplications(communities as import("./contracts.ts").Cluster[], view.impLinks);
+	else attachImpToCommunities(communities, graph.nodes, graph.chains);
 	const next = incrementalLayout(view.nodes, view.edges, previous, {
 		clusters: communities,
 		logicalEdges: view.logicalEdges,

@@ -218,9 +218,52 @@ test("case-insensitive Authorization overrides including null are refused before
 	assert.equal(requests.length, before);
 });
 
+test("failed streams retain provider diagnostics only in the local log", async () => {
+	const original = console.error;
+	const logs: string[] = [];
+	console.error = (...args: unknown[]) => { logs.push(args.join(" ")); };
+	try {
+		responseEvents = [{ type: "error", code: "invalid_image", message: "Image decoding failed; Bearer scratch-oauth-only" }];
+		const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+		const result = await engine.streamFn(engine.model, context()).result();
+		assert.equal(result.stopReason, "error");
+		assert(!result.errorMessage?.includes("Image decoding failed"));
+		assert(logs.some((line) => line.includes("invalid_image") && line.includes("Image decoding failed") && line.includes('"httpStatus":200')));
+		assert(logs.every((line) => !line.includes("scratch-oauth-only")));
+	} finally { console.error = original; }
+});
+
+
+test("HTTP 504 explains a temporary service failure, logs its request ID and never retries", async () => {
+	const original = console.error, logs: string[] = []; let calls = 0;
+	console.error = (...args: unknown[]) => { logs.push(args.join(" ")); };
+	try {
+		const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+		const result = await engine.streamFn(engine.model, context(), { fetch: async () => {
+			calls++;
+			return Response.json({ error: { message: "Synthetic upstream gateway timeout" } }, { status: 504, headers: { "x-request-id": "req_fixture_504" } });
+		} }).result();
+		assert.equal(result.stopReason, "error");
+		assert.match(result.errorMessage ?? "", /temporarily unavailable.*504/);
+		assert.equal(calls, 1);
+		assert(logs.some((line) => line.includes('"httpStatus":504') && line.includes('"requestId":"req_fixture_504"')));
+	} finally { console.error = original; }
+});
+
 test("full credential-storage invalidation aborts foreground and background controllers and clears capabilities", () => {
 	const foreground = chatGPTAbortController(false), background = chatGPTAbortController(true);
 	ipc({ channel: "lh:chatgpt", kind: "state", stamp: { epoch: 2, authorityRevision: 2, revision: 3 }, status: { ...status, available: false }, invalidate: "all" });
 	assert(foreground.controller.signal.aborted); assert(background.controller.signal.aborted); assert.equal(chatGPTModels().length, 0);
 	foreground.release(); background.release();
+});
+
+
+test("local diagnostics redact credentials and images before truncation", async () => {
+ const { chatGPTDiagnosticText } = await import("../src/agent/chatgpt-stream.ts") as any;
+ const text = chatGPTDiagnosticText('400 invalid image; Bearer abc-secret; access_token="refresh-secret" api_key=sk-abcdef data:image/png;base64,AAAA', "abc-secret");
+ assert.match(text, /400 invalid image/);
+ for (const secret of ["abc-secret", "refresh-secret", "sk-abcdef", "base64,AAAA"]) assert(!text.includes(secret));
+ assert.equal(chatGPTDiagnosticText("x".repeat(4000)).length, 2000);
+ assert.equal(chatGPTDiagnosticText({ access_token: "DO_NOT_SERIALIZE" }), "Unrecognized provider diagnostic");
+ assert(!chatGPTDiagnosticText('id_token="SYNTHETIC_ID" client_secret="SYNTHETIC_SECRET"').includes("SYNTHETIC"));
 });

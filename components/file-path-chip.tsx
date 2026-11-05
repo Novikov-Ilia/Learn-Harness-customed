@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-img-element -- Local managed attachment previews must bypass the Next image optimizer. */
 import React, { Fragment } from "react";
 import {
 	File,
@@ -9,7 +10,7 @@ import {
 	FileText,
 	FileVideo,
 } from "lucide-react";
-import { filePathLabel, parseFilePaths } from "@/src/core";
+import { attachmentPreview, filePathLabel, parseFilePaths } from "@/src/core";
 
 function fileIcon(label: string) {
 	const extension = label.split(".").at(-1)?.toLowerCase();
@@ -34,6 +35,7 @@ export interface FilePathChipProps {
 export function FilePathChip({ path, contentEditable, className }: FilePathChipProps) {
 	const label = filePathLabel(path);
 	const Icon = fileIcon(label);
+	const attachment = attachmentPreview(path);
 	return (
 		<span
 			role="img"
@@ -42,8 +44,9 @@ export function FilePathChip({ path, contentEditable, className }: FilePathChipP
 			contentEditable={contentEditable}
 			className={`inline-flex max-w-full items-center gap-1 rounded border bg-muted/50 px-1.5 py-0.5 align-middle text-sm${className ? ` ${className}` : ""}`}
 		>
-			<Icon aria-hidden="true" className="size-3.5 shrink-0" />
+			{attachment?.image ? <img src={attachment.url} alt={label} className="max-h-40 max-w-48 rounded object-contain" /> : <Icon aria-hidden="true" className="size-3.5 shrink-0" />}
 			<span className="min-w-0 truncate">{label}</span>
+			{attachment && contentEditable !== false && <a href={attachment.url} target="_blank" rel="noreferrer" className="shrink-0 text-xs underline" aria-label={`Open ${label}`}>Open</a>}
 		</span>
 	);
 }

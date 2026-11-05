@@ -53,13 +53,23 @@ if (exists(leakedData)) {
 // the 2026-10-08 payload audit; excluded in next.config.ts — this guard
 // makes a regression loud instead of silent).
 const subscriptionSecrets = fs.readdirSync(STANDALONE).filter((name) => /^(chatgpt|github-copilot|xai)-credentials\.json/.test(name));
-for (const secret of ["auth.json", ...subscriptionSecrets, ".env", ".env.local"]) {
+for (const secret of ["auth.json", ...subscriptionSecrets, "gemini-cli-credentials", "antigravity-cli-credentials", ".env", ".env.local"]) {
 	if (exists(path.join(STANDALONE, secret))) {
 		console.error(`[build-server] REFUSING: standalone contains ${secret} — dev secrets would ship in the app.`);
 		console.error("             Check outputFileTracingExcludes in next.config.ts.");
 		process.exit(1);
 	}
 }
+
+// Native Antigravity is a local runtime package. Materialize the file dependency
+// so the packaged server never depends on npm's development symlink target.
+const agySource = path.join(ROOT, "vendor", "antigravity-runtime");
+const agyTarget = path.join(STANDALONE, "node_modules", "@learnharness", "antigravity-runtime");
+const agyBinary = path.join("bin", `${process.platform}-${process.arch}`, process.platform === "win32" ? "antigravity.exe" : "antigravity");
+if (!exists(path.join(agySource, agyBinary))) throw new Error("Run scripts/prepare-antigravity.mjs before packaging.");
+fs.rmSync(agyTarget, { recursive: true, force: true });
+copyTree(agySource, agyTarget);
+fs.rmSync(path.join(STANDALONE, "vendor", "antigravity-runtime"), { recursive: true, force: true });
 
 // 2c) Payload curation (2026-10-11): the trace sweep can copy repo-root
 // dist/ (previous installers, recursively) and the development Electron
@@ -87,6 +97,10 @@ for (const asset of [
 		console.error(`[build-server] prompt asset missing from the trace: ${asset}`);
 		process.exit(1);
 	}
+}
+
+for (const asset of ["jbig2.wasm", "jbig2_nowasm_fallback.js", "openjpeg.wasm", "openjpeg_nowasm_fallback.js"]) {
+ if (!exists(path.join(STANDALONE, "node_modules", "pdfjs-dist", "wasm", asset))) throw new Error(`PDF decoder missing from payload: ${asset}`);
 }
 
 console.log("[build-server] server payload ready:", STANDALONE);

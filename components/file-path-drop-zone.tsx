@@ -2,14 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { FileSymlinkIcon, XIcon } from "lucide-react";
-import { quoteFilePath } from "@/src/core";
-import { appendToPrimaryInput } from "@/components/dictation";
-import { INSERT_FILE_PATHS_EVENT } from "@/components/path-input";
+import { UPLOAD_FILES_EVENT } from "@/components/path-input";
+import { filesFromTransfer } from "@/components/attachment-client";
 
-const BROWSER_NOTICE = "Local file paths can only be attached in the desktop app. You can paste a full path instead.";
+const BROWSER_NOTICE = "Drop PDF, images or text files to attach them";
 
 /** The content area only: the sidebar is deliberately outside this zone.
- * Existing files stay where they are; only quoted path strings enter drafts. */
+ * Dropped files use the same managed upload pipeline as picker and clipboard input. */
 export function FilePathDropZone({ children, className }: { children: React.ReactNode; className?: string }) {
 	const root = useRef<HTMLElement>(null);
 	const depth = useRef(0);
@@ -56,36 +55,21 @@ export function FilePathDropZone({ children, className }: { children: React.Reac
 			onDragEnd={clearDrag}
 			onDrop={(event) => {
 				if (!hasFiles(event)) return;
+				clearDrag();
+				// A drop directly onto PathInput is already handled by its native listener.
+				if (event.defaultPrevented) return;
 				event.preventDefault();
 				event.stopPropagation();
-				clearDrag();
-				const resolve = window.lh?.getPathForFile;
-				if (!resolve) { setNotice(BROWSER_NOTICE); return; }
-				// Directories are not file references. This check uses drag metadata,
-				// never a server request or a new filesystem capability.
-				const entries = Array.from(event.dataTransfer.items).filter((item) => item.kind === "file");
-				const paths: string[] = [];
-				let skipped = 0;
-				for (const [index, file] of Array.from(event.dataTransfer.files).entries()) {
-					try {
-						if (entries[index]?.webkitGetAsEntry?.()?.isDirectory) { skipped++; continue; }
-						const path = resolve(file);
-						quoteFilePath(path); // Same rooted-path validity rule as typed chips.
-						paths.push(path);
-					} catch { skipped++; }
-				}
-				if (paths.length === 0) {
-					setNotice("No local file paths were available. Drop existing files from your computer.");
-					return;
-				}
+				const entries = Array.from(event.dataTransfer.items ?? []).filter(item => item.kind === "file");
+				const files = filesFromTransfer(event.dataTransfer).filter((_file, i) => !entries[i]?.webkitGetAsEntry?.()?.isDirectory);
+				if (!files.length) { setNotice("Drop supported files, not directories."); return; }
 				const focused = document.activeElement?.closest<HTMLElement>("[data-file-path-input]");
-				if (focused && event.currentTarget.contains(focused)) {
-					focused.dispatchEvent(new CustomEvent(INSERT_FILE_PATHS_EVENT, { detail: paths }));
-				} else if (!appendToPrimaryInput(paths.map(quoteFilePath).join(" "))) {
-					setNotice("Open a chat to attach file paths.");
-					return;
-				}
-				setNotice(skipped ? "Some dropped items had no available file path." : "");
+				const zone = event.currentTarget;
+				const target = focused && zone.contains(focused) ? focused
+					: zone.querySelector<HTMLElement>("[data-file-path-default]") ?? zone.querySelector<HTMLElement>("[data-file-path-input]");
+				if (!target) { setNotice("Open a chat to attach files."); return; }
+				target.dispatchEvent(new CustomEvent(UPLOAD_FILES_EVENT, { detail: files }));
+				setNotice(files.length < event.dataTransfer.files.length ? "Directories were skipped." : "");
 			}}
 		>
 			{children}
@@ -93,7 +77,7 @@ export function FilePathDropZone({ children, className }: { children: React.Reac
 				<div data-testid="file-path-drop-indicator" className="pointer-events-none absolute inset-2 z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/85 p-6 text-center backdrop-blur-sm">
 					<div className="flex max-w-md flex-col items-center gap-3">
 						<FileSymlinkIcon className="size-8 text-primary" aria-hidden />
-						<span className="font-ui text-sm">{window.lh?.getPathForFile ? "Drop to attach file paths" : BROWSER_NOTICE}</span>
+						<span className="font-ui text-sm">{BROWSER_NOTICE}</span>
 					</div>
 				</div>
 			)}

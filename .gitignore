@@ -19,3 +19,8 @@ xai-credentials.json*
 
 # dev-fresh launcher scratch (fresh-user sim): disposable per launch
 .fresh-data/
+
+# Application-owned Gemini CLI OAuth profile
+gemini-cli-credentials/
+antigravity-cli-credentials/
+vendor/antigravity-runtime/bin/

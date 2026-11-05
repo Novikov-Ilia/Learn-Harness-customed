@@ -65,9 +65,8 @@
 
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NotesImportControl, NotesImportErrors, NotesImportNotices, useNotesImport } from "@/components/notes-import.tsx";
-import Link from "next/link";
-import { FileTextIcon, ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, WaypointsIcon } from "lucide-react";
-import { incrementalLayout, propositionSessionHref, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
+import { ListTreeIcon, Loader2Icon, SearchIcon, SettingsIcon, WaypointsIcon } from "lucide-react";
+import { incrementalLayout, type GraphCostSummary, type GraphNode, type GraphSnapshot } from "@/src/core";
 import { planCostLabel } from "@/components/usage-format";
 import { GraphCanvasRenderer, type GraphRenderSettings } from "./graph-canvas.ts";
 import { usePopoverDismiss } from "@/components/popover-dismiss";
@@ -76,6 +75,9 @@ import { useServerEvent, useServerResync } from "@/components/server-events";
 import { MenuShell } from "@/components/menu-shell.tsx";
 import { DeleteNodeDialog } from "@/components/delete-node-dialog.tsx";
 import { ChainTableOverlay } from "@/components/chain-table.tsx";
+import { GraphKnowledgeCard } from "./graph-knowledge-card.tsx";
+import { GraphWorkbenchControls } from "./graph-workbench-controls.tsx";
+import type { GraphReprocessStatus } from "@/src/core";
 import { Hint } from "@/components/ui/hint";
 import {
 	ARROW_LENGTH_LADDER,
@@ -945,6 +947,10 @@ export function GraphView({
 	const cardRef = useRef<HTMLDivElement | null>(null);
 	const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
 	const [selected, setSelected] = useState<Selection | null>(null);
+	const [workbenchStatus, setWorkbenchStatus] = useState<GraphReprocessStatus>({ phase: "idle" });
+	const workbenchPhase = useRef<GraphReprocessStatus["phase"]>("idle");
+	const [workbenchError, setWorkbenchError] = useState<string | null>(null);
+	const [explanationState, setExplanationState] = useState<{ id: string; pending: boolean; error: string | null } | null>(null);
 	// The latest snapshot for the renderer's click callbacks (they are
 	// constructed once, so they read through this ref, never a closure).
 	const snapshotRef = useRef<GraphSnapshot | null>(null);
@@ -1034,6 +1040,43 @@ export function GraphView({
 	// Fetch the derived graph. Re-runs when a background pipeline run
 	// finishes (refreshTick) — its merges just landed in the ledger.
 	const [refreshTick, setRefreshTick] = useState(0);
+	const refreshWorkbench = useCallback(() => {
+		void fetch("/api/graph/reprocess").then(async (res) => {
+			const data = await res.json(); if (!res.ok) throw new Error(data.error ?? "Could not read graph processing status.");
+			if (workbenchPhase.current !== data.phase && ["completed", "failed", "aborted"].includes(data.phase)) setRefreshTick((tick) => tick + 1);
+			workbenchPhase.current = data.phase; setWorkbenchStatus(data as GraphReprocessStatus);
+		}).catch((error) => setWorkbenchError(error instanceof Error ? error.message : String(error)));
+	}, []);
+	useEffect(refreshWorkbench, [refreshWorkbench]);
+	useServerEvent("activity-changed", refreshWorkbench);
+	useServerResync(refreshWorkbench);
+	const graphAction = async (url: string, method: string, body?: unknown) => {
+		const response = await fetch(url, { method, ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }) });
+		const data = await response.json(); if (!response.ok) throw new Error(data.error ?? "Graph action failed."); return data;
+	};
+	const reprocessGraph = async () => {
+		setWorkbenchError(null);
+		try { await graphAction("/api/graph/reprocess", "POST"); refreshWorkbench(); }
+		catch (error) { setWorkbenchError(error instanceof Error ? error.message : String(error)); }
+	};
+	const abortReprocessing = async () => {
+		try { await graphAction("/api/graph/reprocess", "DELETE"); refreshWorkbench(); }
+		catch (error) { setWorkbenchError(error instanceof Error ? error.message : String(error)); }
+	};
+	const renameRegion = async (id: string, name: string) => {
+		await graphAction("/api/graph/regions", "PATCH", { id, name });
+		const current = snapshotRef.current;
+		if (current) { current.regionNames = { ...current.regionNames, [id]: name.trim() }; const region = current.clusters.find((c) => c.id === id); if (region) region.label = name.trim(); }
+		rendererRef.current?.setClusterLabels(new Map([[id, name.trim()]]), true); setLabelTick((tick) => tick + 1);
+	};
+	const requestExplanation = async (id: string) => {
+		setExplanationState({ id, pending: true, error: null });
+		try {
+			const explanation = await graphAction(`/api/graph/nodes/${encodeURIComponent(id)}/explanation`, "POST");
+			const current = snapshotRef.current; if (current) current.explanations = { ...current.explanations, [id]: explanation };
+			setExplanationState({ id, pending: false, error: null });
+		} catch (error) { setExplanationState({ id, pending: false, error: error instanceof Error ? error.message : String(error) }); }
+	};
 	// The chain table overlay (chains-overlay plan, 2026-09-29) —
 	// component-local: a browsing surface, not graph state.
 	const [chainsOpen, setChainsOpen] = useState(false);
@@ -1052,11 +1095,11 @@ export function GraphView({
 	useEffect(() => {
 		let cancelled = false;
 		fetch("/api/graph")
-			.then((res) => res.json() as Promise<GraphSnapshot>)
+			.then((res) => { if (!res.ok) throw new Error("Could not load the knowledge graph."); return res.json() as Promise<GraphSnapshot>; })
 			.then((data) => {
 				if (!cancelled) setSnapshot(data);
 			})
-			.catch((err) => console.error("[graph] fetch failed:", err));
+			.catch((err) => { console.error("[graph] fetch failed:", err); if (!cancelled) setWorkbenchError(err instanceof Error ? err.message : String(err)); });
 		return () => {
 			cancelled = true;
 		};
@@ -1190,14 +1233,21 @@ export function GraphView({
 			if (typeof id !== "string" || typeof title !== "string" || id === "" || title === "") return;
 			const snap = snapshotRef.current;
 			if (snap != null) renameSessionsPatch(snap, id, title);
-			rendererRef.current?.setClusterLabels(new Map([[id, title]]));
+			if (!snap?.regionNames?.[id]) {
+				const region = snap?.clusters.find((c) => c.id === id); if (region?.label) region.label = title;
+				rendererRef.current?.setClusterLabels(new Map([[id, title]]));
+			}
 			setLabelTick((t) => t + 1);
 		};
 		const onSourceRenamed = (event: Event) => {
 			const { id, title } = (event as CustomEvent<{ id?: string; title?: string }>).detail ?? {};
 			if (typeof id !== "string" || typeof title !== "string") return;
 			// Label-only channel: never rebuild geometry or rewrite fileSources.
-			rendererRef.current?.setClusterLabels(new Map([[id, title]]));
+			const snap = snapshotRef.current;
+			if (!snap?.regionNames?.[id]) {
+				const region = snap?.clusters.find((c) => c.id === id); if (region?.label) region.label = title;
+				rendererRef.current?.setClusterLabels(new Map([[id, title]])); setLabelTick((tick) => tick + 1);
+			}
 		};
 		window.addEventListener("lh:chat-renamed", onRenamed);
 		window.addEventListener("lh:source-renamed", onSourceRenamed);
@@ -1461,7 +1511,7 @@ export function GraphView({
 		card.style.left = `${left}px`;
 		card.style.top = `${top}px`;
 		card.style.visibility = "visible";
-	}, [selected]);
+	}, [selected, explanationState]);
 
 	return (
 		<div className="relative h-full w-full">
@@ -1587,6 +1637,11 @@ export function GraphView({
 				/>
 			</div>
 
+			{!isEmpty && <GraphWorkbenchControls regions={snapshot?.clusters ?? []} onRename={renameRegion}
+				onReprocess={() => { void reprocessGraph(); }} onAbort={() => { void abortReprocessing(); }}
+				phase={workbenchStatus.phase} error={workbenchError ?? workbenchStatus.error ?? null} />}
+			{isEmpty && workbenchError && <p role="alert" className="max-w-96 rounded-lg border bg-card p-2 text-xs text-red-400">{workbenchError}</p>}
+
 			<NotesImportErrors errors={notesImport.errors} />
 			<NotesImportNotices notices={notesImport.notices} />
 			{/* Top-right tail (owner, 2026-09-20): the pipeline cost number —
@@ -1610,51 +1665,14 @@ export function GraphView({
 			</div>
 
 			{selected && !isEmpty && (
-				<div
-					ref={cardRef}
-					// Positioned imperatively in the layout effect above; hidden
-					// until placed so the flip never flashes in the wrong spot.
-					style={{ visibility: "hidden", left: 0, top: 0 }}
-					// lh-no-drag: the card is placed anywhere on the canvas —
-					// when it lands in the top strip it must stay interactive
-					// over home.tsx's drag surface (2026-09-17).
-					className="lh-no-drag absolute z-10 w-80 max-w-[calc(100%-1rem)] rounded-xl border bg-card p-4 text-left shadow-lg"
-				>
-					<div className="text-sm font-medium leading-snug">{selected.node.name}</div>
-					<div className="mt-1 text-xs leading-relaxed text-muted-foreground">{selected.node.statement}</div>
-					{selected.sourceIds.length > 0 ? (
-						<div className="mt-3 flex flex-col gap-1">
-							<div className="text-xs text-muted-foreground">Sessions</div>
-							{selected.sourceIds.map((sourceId) => {
-								// An imported-notes file: a STATIC entry — the path,
-								// plain text, never a link (no session to open).
-								if (snapshot?.fileSources?.[sourceId] !== undefined) {
-									return (
-										<div key={sourceId} className="flex items-center gap-1.5">
-											<FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
-											<span className="min-w-0 flex-1 truncate px-2 py-1.5 text-sm text-muted-foreground">
-												{snapshot.fileSources[sourceId]}
-											</span>
-										</div>
-									);
-								}
-								// A real session: deep-linkable provenance.
-								return (
-									<div key={sourceId} className="flex items-center gap-1.5">
-										<Link
-											href={propositionSessionHref(selected.node, sourceId)}
-											scroll={false}
-											className="min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-sm text-foreground transition-colors hover:bg-accent"
-										>
-											{snapshot?.sessions[sourceId] ?? sourceId}
-										</Link>
-									</div>
-								);
-							})}
-						</div>
-					) : (
-						<div className="mt-3 text-xs text-muted-foreground">No sessions recorded.</div>
-					)}
+				<div ref={cardRef} style={{ visibility: "hidden", left: 0, top: 0 }} className="lh-no-drag absolute z-20 w-[34rem] max-w-[calc(100%-1rem)]">
+					<GraphKnowledgeCard node={selected.node} nodes={snapshot?.propositions ?? []} chains={snapshot?.chains ?? []}
+						sessions={snapshot?.sessions ?? {}} fileSources={snapshot?.fileSources ?? {}}
+						explanation={snapshot?.explanations?.[selected.node.id]}
+						onClose={() => setSelected(null)} onDelete={() => setDeletingNode({ id: selected.node.id, name: selected.node.name })}
+						onExplain={() => { void requestExplanation(selected.node.id); }}
+						explaining={explanationState?.id === selected.node.id && explanationState.pending}
+						error={explanationState?.id === selected.node.id ? explanationState.error : null} />
 				</div>
 			)}
 			{/* The chain table overlay (chains-overlay plan, 2026-09-29):

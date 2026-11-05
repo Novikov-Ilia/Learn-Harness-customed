@@ -35,7 +35,7 @@ const WIND_DOWN_POLL_MS = 50;
 /** What deleteChatSession did — the route maps it straight to HTTP. */
 export type ChatDeleteOutcome =
 	| { ok: false; status: 404; code: "not_found"; error: string }
-	| { ok: false; status: 409; code: "turn_in_flight" | "jobs_running"; error: string; jobIds: string[] }
+	| { ok: false; status: 409; code: "turn_in_flight" | "jobs_running" | "has_children"; error: string; jobIds: string[] }
 	| { ok: false; status: 503; code: "extraction_winding_down"; error: string }
 	| {
 			ok: true;
@@ -69,6 +69,9 @@ export type ChatDeleteOutcome =
  *      nothing merged.
  */
 export function runningWorkBlocker(chatId: string): Extract<ChatDeleteOutcome, { status: 409 }> | null {
+	if (stores.chatStore.listChats().some((chat) => chat.parentId === chatId)) return {
+		ok: false, status: 409, code: "has_children", error: "This chat has child branches. Delete its children before deleting the parent.", jobIds: [],
+	};
 	if (isTurnRunning(chatId)) {
 		return {
 			ok: false,

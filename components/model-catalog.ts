@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { ModelCatalogResponse } from "@/src/core";
+import { useNotifyHub } from "@/components/server-events";
 import { onSettingsSaved } from "@/components/settings-signal";
 
 // Shared stale-while-revalidate catalog. Metadata refreshes retain the last
@@ -32,23 +33,26 @@ function fetchCatalog(revalidate = false): void {
 }
 
 export function useModelCatalog(): { catalog: ModelCatalogResponse | undefined; failed: boolean; refresh: () => void } {
+	const hub = useNotifyHub();
 	const [snapshot, setSnapshot] = useState(() => ({ catalog: catalogCache, failed: catalogError }));
 	useEffect(() => {
 		const first = catalogReaders.size === 0;
 		const read = () => setSnapshot({ catalog: catalogCache, failed: catalogError });
 		catalogReaders.add(read);
 		if (first) {
-			stopCatalogSignals = onSettingsSaved((section) => {
-				if (section === "keys" || section === "claudeCode") {
-					catalogGeneration++; catalogInflight = undefined; catalogCache = undefined;
-					fetchCatalog();
+			const connectionChanged = () => { catalogGeneration++; catalogInflight = undefined; catalogCache = undefined; fetchCatalog(); };
+			const offSettings = onSettingsSaved((section) => {
+				if (section === "keys" || section === "claudeCode" || section === "geminiCli") {
+					connectionChanged();
 				} else if (section === "models") fetchCatalog(true);
 			});
+			const offSubscriptions = hub?.subscribe("subscriptions-changed", connectionChanged);
+			stopCatalogSignals = () => { offSettings(); offSubscriptions?.(); };
 			fetchCatalog(true);
 		} else fetchCatalog();
 		read();
 		return () => { catalogReaders.delete(read); if (!catalogReaders.size) { stopCatalogSignals?.(); stopCatalogSignals = undefined; } };
-	}, []);
+	}, [hub]);
 	const refresh = useCallback(() => fetchCatalog(true), []);
 	return { ...snapshot, refresh };
 }

@@ -25,7 +25,20 @@ import type { EmissionStats } from "./graph.ts";
  *  the default and ABSENT on pre-practice records (no migration — absence
  *  reads as teach); "practice" marks an adaptive-practice session — the
  *  practice agent, its two tools, no extraction, no graph writes. */
-export type ChatKind = "teach" | "practice";
+export type ChatKind = "teach" | "practice" | "planning";
+
+export interface LearningFact { topic: string; evidenceIds: string[] }
+export interface LearningError extends LearningFact { id?: string; description: string; status: "open" | "corrected" }
+export interface LearningNote { mastered: LearningFact[]; errors: LearningError[]; updatedAt: string; throughMessageId: string }
+/** Immutable inheritance. Kept outside messages so ancestor questions never gate the child UI. */
+export interface ChatContextSnapshot { parentId: string; capturedAt: string; messages: LhMessage[] }
+export interface CreateChatOptions {
+	settings?: ChatSettings;
+	parentId?: string;
+	contextSnapshot?: ChatContextSnapshot;
+	branchRequestId?: string;
+	planBlockId?: string;
+}
 
 export interface ChatRecord {
 	id: string;
@@ -35,6 +48,12 @@ export interface ChatRecord {
 	messages: LhMessage[];
 	/** The session's kind — absent = teach (pre-practice records). */
 	kind?: ChatKind;
+	parentId?: string;
+	contextSnapshot?: ChatContextSnapshot;
+	branchRequestId?: string;
+	planBlockId?: string;
+	learningNote?: LearningNote;
+	learningNoteError?: string;
 	/** The session's plan tree (vision §2) — written by plan tools via saveTree. */
 	tree?: PlanTree;
 	/** Append-only usage log (observability, 2026-09): one entry per model
@@ -263,6 +282,8 @@ export interface ChatSummary {
 	updatedAt: string;
 	/** Normalized kind (absent record field reads as teach). */
 	kind: ChatKind;
+	parentId?: string;
+	planBlockId?: string;
 	messageCount: number;
 	/** The session's current phase, derived from the stored plan tree. */
 	phase: Phase3;

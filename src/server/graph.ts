@@ -12,6 +12,9 @@ import {
 import { extractionStatuses } from "../agent/subagents/extraction.ts";
 import { stores } from "./stores.ts";
 import { callCost } from "./pricing.ts";
+import { graphPersonalizationStore } from "../store/graph-personalization.ts";
+import { personalizeGraphSnapshot } from "../core/graph-personalization.ts";
+import { graphMaintenanceRunning } from "../core/graph-maintenance.ts";
 
 /**
  * Server-side graph entry for the home view (GET /api/graph). A PURE READ:
@@ -22,7 +25,7 @@ import { callCost } from "./pricing.ts";
 export function graphView(): GraphSnapshot {
 	const organization = stores.sourceOrganizationStore.read();
 	const names = Object.fromEntries(Object.entries(organization.placements).flatMap(([id, p]) => p.name === undefined ? [] : [[id, p.name]]));
-	return graphSnapshot(stores, names);
+	return personalizeGraphSnapshot(graphSnapshot(stores, names), graphPersonalizationStore.read());
 }
 
 /** The graph view's cost surface (GET /api/graph/costs — the 2026-09 cost
@@ -62,6 +65,7 @@ export function graphRevision(): number {
 		LEDGER_FILES.sessions,
 		LEDGER_FILES.coverage,
 		POSITIONS_FILE,
+		graphPersonalizationStore.file,
 	]) {
 		try {
 			revision = Math.max(revision, fs.statSync(file).mtimeMs);
@@ -77,7 +81,7 @@ export function graphRevision(): number {
 /** What deleteGraphNode did — the route maps it straight to HTTP. */
 export type NodeDeleteOutcome =
 	| { ok: false; status: 404; code: "not_found"; error: string }
-	| { ok: false; status: 409; code: "extraction_running"; error: string }
+	| { ok: false; status: 409; code: "extraction_running" | "maintenance_running"; error: string }
 	| { ok: true; stats: NodeDeletionStats; graphRevision: number };
 
 /**
@@ -104,6 +108,7 @@ export type NodeDeleteOutcome =
  *     existingIds guard) — no dangling edges, no resurrection.
  */
 export function deleteGraphNode(nodeId: string): NodeDeleteOutcome {
+	if (graphMaintenanceRunning()) return { ok: false, status: 409, code: "maintenance_running", error: "Graph reprocessing is running — try deleting when it finishes." };
 	if (extractionStatuses().length > 0) {
 		return {
 			ok: false,
@@ -114,9 +119,15 @@ export function deleteGraphNode(nodeId: string): NodeDeleteOutcome {
 	}
 	// THE SYNC BLOCK — no awaits below (the doc above): the gate and the
 	// rewrite are one atomic stretch of the event loop.
+	const personalization = graphPersonalizationStore.read();
 	const stats = deleteNodeTraces(stores.graphStore, nodeId);
 	if (stats === null) {
 		return { ok: false, status: 404, code: "not_found", error: "No such node" };
+	}
+	const groups = personalization.groups.map((group) => ({ ...group, nodeIds: group.nodeIds.filter((id) => id !== nodeId) })).filter((group) => group.nodeIds.length >= 2);
+	if (personalization.explanations[nodeId] || JSON.stringify(groups) !== JSON.stringify(personalization.groups)) {
+		const { [nodeId]: _deletedExplanation, ...explanations } = personalization.explanations;
+		graphPersonalizationStore.write({ ...personalization, groups, explanations });
 	}
 	return { ok: true, stats, graphRevision: graphRevision() };
 }

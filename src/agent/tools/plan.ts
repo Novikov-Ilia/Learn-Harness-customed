@@ -57,6 +57,7 @@ const planInitInput = Type.Object({
 			"The only strict rule: ids are permanent lowercase slugs (a-z, 0-9, hyphens/underscores) — checks reference them via nodeId. " +
 			"Titles are free single-line text; `-->` means 'from = prerequisite' (chains fine); no subgraphs, styles, or classes.",
 	}),
+	blocks: Type.Optional(Type.Array(Type.Object({ id: Type.String({ minLength: 1 }), summary: Type.String({ minLength: 1, description: "Scope, learning outcome and boundaries of this logical block." }) }), { description: "For a global course plan, supply a scope summary for every node using its exact id." })),
 });
 
 export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> {
@@ -71,7 +72,7 @@ export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> 
 				"`-->` edges meaning 'from must be understood before to' (chains fine). 5–15 nodes: a map, not a syllabus — one reasoning step per node, compress. " +
 				"Every check you fire names the node it assesses via `nodeId`; where the lesson stands derives from those tags.",
 			parameters: planInitInput,
-			execute: serverExecute("plan_init", planInitInput, async ({ mermaid }) => {
+			execute: serverExecute("plan_init", planInitInput, async ({ mermaid, blocks }) => {
 				const { chatId, chatStore } = ctx;
 				const record = chatStore.getChat(chatId);
 				if (!record) return { ok: false, error: `Chat not found: ${chatId}` };
@@ -86,7 +87,9 @@ export function planTools(ctx: PlanToolContext): Record<string, AgentTool<any>> 
 				try {
 					// createTree validates the structure (duplicate ids, missing
 					// edge endpoints, self-loops, cycles → PlanTreeError).
-					const next = createTree(parsed.plan.nodes, parsed.plan.edges);
+					if (blocks?.some((block) => !parsed.plan!.nodes.some((node) => node.id === block.id))) return { ok: false, error: "A block summary references an unknown node id" };
+					if (record.kind === "planning" && parsed.plan.nodes.some((node) => !blocks?.some((block) => block.id === node.id && block.summary.trim()))) return { ok: false, error: "Every planning block needs a scope summary in blocks: [{id, summary}]" };
+					const next = createTree(parsed.plan.nodes.map((node) => { const summary = blocks?.find((block) => block.id === node.id)?.summary; return summary ? { ...node, summary } : node; }), parsed.plan.edges);
 					chatStore.saveTree(chatId, next);
 					// Context diet: content = the validated nodeIds + the reminder (the
 				// ids just became binding for every quiz/explain call); details =

@@ -20,6 +20,7 @@ export * from "./ports.ts";
 export * from "./chains.ts";
 export * from "./source-organization.ts";
 export * from "./source-selection.ts";
+export * from "./graph-personalization.ts";
 export * from "./source-label.ts";
 export * from "./render-settings.ts";
 
@@ -39,6 +40,7 @@ export * from "./phases.ts";
 export * from "./pending.ts";
 export * from "./prompt-segments.ts";
 export * from "./math-delims.ts";
+export * from "./graph-math.ts";
 // Wave B (owner-approved 2026-09-26): the native record (LhMessage), the
 // and the input-events contract — all
 // pure logic, browser-safe.
@@ -87,3 +89,8 @@ export * from "./coverage.ts";
 // ONE session→markdown formatter — the extractor's view and the user-facing
 // export share it. Pure, browser-safe.
 export * from "./session-markdown.ts";
+export * from "./attachments.ts";
+
+export { GEMINI_CLI_PROVIDER, GEMINI_CLI_VERSION, type GeminiCliStatus } from "./contracts/gemini-cli.ts";
+
+export * from "./deliverables.ts";
