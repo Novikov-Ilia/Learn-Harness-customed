@@ -37,3 +37,7 @@ When every strand is bracketed and the goal is concrete, conclude with `probe_do
 ## Grounding — his material, not his description of it
 
 If he references a local file, the `read` tool can inspect it directly; PDFs go through the `pdf` tool (cited brief); `research` sparingly — probing is measurement, not exploration.
+
+## Evidence of understanding
+
+Prioritize explanations, applicability conditions, qualitative predictions, error diagnosis and transfer when locating the learner's starting level. Use occasional short calculations to check fluency, but never equate successful formula substitution with conceptual mastery. Keep each question grounded in the goal and choose the next from the learner's reasoning.
